@@ -1,0 +1,185 @@
+blueprint:
+  name: Frigate Smart Notifications
+  description: Smart notifications for Frigate cameras with zone and object type filtering
+  domain: automation
+  input:
+    camera:
+      name: Frigate Camera
+      description: Select the Frigate camera to monitor
+      selector:
+        entity:
+          domain: camera
+          integration: frigate
+    notify_device:
+      name: Mobile Device
+      description: Device to receive notifications
+      selector:
+        device:
+          integration: mobile_app
+    zones:
+      name: Zones to Monitor
+      description: Select specific zones to monitor (leave empty for all zones)
+      default: []
+      selector:
+        select:
+          multiple: true
+          custom_value: false
+          mode: dropdown
+          options: !input zones_from_frigate
+    object_types:
+      name: Object Types
+      description: Select which types of objects to monitor
+      default: ["person"]
+      selector:
+        select:
+          multiple: true
+          options:
+            - "person"
+            - "car"
+            - "animal"
+            - "dog"
+            - "cat"
+            - "bird"
+    min_confidence:
+      name: Minimum Confidence
+      description: Minimum confidence score (%) to trigger notification
+      default: 75
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: "%"
+    cooldown_period:
+      name: Notification Cooldown
+      description: Minimum time between notifications (in minutes)
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 60
+          unit_of_measurement: minutes
+    quiet_hours_start:
+      name: Quiet Hours Start
+      description: Start time for quiet hours (no notifications)
+      default: "22:00:00"
+      selector:
+        time:
+    quiet_hours_end:
+      name: Quiet Hours End
+      description: End time for quiet hours
+      default: "07:00:00"
+      selector:
+        time:
+    include_snapshot:
+      name: Include Snapshot
+      description: Include snapshot image in notification
+      default: true
+      selector:
+        boolean:
+    include_clip:
+      name: Include Clip
+      description: Include video clip in notification
+      default: true
+      selector:
+        boolean:
+
+variables:
+  camera_name: "{{ input.camera.split('.')[1] }}"
+  # Extract base camera name without frigate_ prefix
+  base_camera: "{{ input.camera.split('.')[1].replace('frigate_', '') }}"
+  zones_set: "{{ input.zones | list }}"
+  object_types_set: "{{ input.object_types | list }}"
+
+trigger:
+  - platform: event
+    event_type: frigate.event
+    event_data:
+      camera: "{{ base_camera }}"
+
+condition:
+  # Check if within quiet hours
+  - condition: template
+    value_template: >
+      {% set now = now() %}
+      {% set start = strptime(input.quiet_hours_start, '%H:%M:%S').time() %}
+      {% set end = strptime(input.quiet_hours_end, '%H:%M:%S').time() %}
+      {% if start <= end %}
+        {{ not (now.time() >= start and now.time() <= end) }}
+      {% else %}
+        {{ not (now.time() >= start or now.time() <= end) }}
+      {% endif %}
+  # Check if object type is in selected types
+  - condition: template
+    value_template: "{{ trigger.event.data.type in object_types_set }}"
+  # Check confidence threshold
+  - condition: template
+    value_template: "{{ trigger.event.data.confidence | float > input.min_confidence }}"
+  # Check if zone is in selected zones (if zones are specified)
+  - condition: template
+    value_template: >
+      {% if zones_set | length == 0 %}
+        true
+      {% else %}
+        {{ trigger.event.data.zone in zones_set }}
+      {% endif %}
+
+action:
+  - variables:
+      snapshot_path: >
+        {% if input.include_snapshot %}
+          {{ trigger.event.data.snapshot }}
+        {% else %}
+          null
+        {% endif %}
+      clip_path: >
+        {% if input.include_clip %}
+          {{ trigger.event.data.clip }}
+        {% else %}
+          null
+        {% endif %}
+      zone_info: >
+        {% if trigger.event.data.zone %}
+          in {{ trigger.event.data.zone }}
+        {% else %}
+          ''
+        {% endif %}
+      
+  - service: notify.mobile_app_{{ device_id }}
+    data:
+      message: >
+        {{ trigger.event.data.type | title }} detected{{ zone_info }} 
+        ({{ trigger.event.data.confidence | round }}% confidence)
+      title: "{{ states[input.camera].name }}"
+      data:
+        tag: "frigate_{{ camera_name }}"
+        color: >
+          {% if trigger.event.data.type == 'person' %}
+            "#ff0000"
+          {% elif trigger.event.data.type in ['car', 'truck'] %}
+            "#ffa500"
+          {% else %}
+            "#00ff00"
+          {% endif %}
+        sticky: "{{ trigger.event.data.type == 'person' }}"
+        importance: >
+          {% if trigger.event.data.type == 'person' %}
+            high
+          {% else %}
+            normal
+          {% endif %}
+        {% if snapshot_path %}
+        attachment:
+          url: "{{ snapshot_path }}"
+          content-type: "image/jpeg"
+          hide-thumbnail: false
+        {% endif %}
+        {% if clip_path %}
+        video:
+          url: "{{ clip_path }}"
+        {% endif %}
+
+  - delay:
+      minutes: !input cooldown_period
+
+mode: single
+max_exceeded: silent
