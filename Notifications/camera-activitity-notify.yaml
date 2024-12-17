@@ -9,6 +9,21 @@ blueprint:
       selector:
         entity:
           domain: camera
+    person_detection_sensor:
+      name: Person Detection Sensor (Optional)
+      description: Binary sensor that indicates person detection (e.g., binary_sensor.camera_person for Frigate)
+      default: ""
+      selector:
+        entity:
+          domain: binary_sensor
+          multiple: false
+          required: false
+    motion_sensor:
+      name: Motion Sensor
+      description: Binary sensor that indicates motion detection
+      selector:
+        entity:
+          domain: binary_sensor
     notify_device:
       name: Mobile Device
       description: Device to receive notifications
@@ -60,10 +75,15 @@ blueprint:
 
 trigger:
   - platform: state
-    entity_id: !input camera
+    entity_id: !input motion_sensor
     to: "on"
     for:
       seconds: !input motion_duration
+  - platform: state
+    entity_id: !input person_detection_sensor
+    to: "on"
+    id: "person_detected"
+    enabled: "{{ input.person_detection_sensor != '' }}"
 
 condition:
   - condition: template
@@ -81,40 +101,40 @@ condition:
       - condition: and
         conditions:
           - condition: template
-            value_template: "{{ trigger.to_state.attributes.motion }}"
-          - condition: input_boolean
-            input_id: notify_on_motion
+            value_template: "{{ trigger.entity_id == input.motion_sensor }}"
+          - condition: template
+            value_template: "{{ input.notify_on_motion }}"
       - condition: and
         conditions:
           - condition: template
-            value_template: "{{ trigger.to_state.attributes.person }}"
-          - condition: input_boolean
-            input_id: notify_on_person
+            value_template: "{{ trigger.entity_id == input.person_detection_sensor }}"
+          - condition: template
+            value_template: "{{ input.notify_on_person }}"
 
 action:
   - choose:
       - conditions:
           - condition: template
-            value_template: "{{ trigger.to_state.attributes.person }}"
+            value_template: "{{ trigger.entity_id == input.person_detection_sensor }}"
         sequence:
           - service: notify.mobile_app_{{ device_id }}
             data:
-              message: "Person detected on {{ trigger.to_state.name }}"
+              message: "Person detected on {{ states[input.camera].name }}"
               data:
-                image: "/api/camera_proxy/{{ trigger.entity_id }}"
+                image: "/api/camera_proxy/{{ input.camera }}"
                 tag: "camera_notification"
                 color: "#ff0000"
                 sticky: true
                 importance: high
       - conditions:
           - condition: template
-            value_template: "{{ trigger.to_state.attributes.motion }}"
+            value_template: "{{ trigger.entity_id == input.motion_sensor }}"
         sequence:
           - service: notify.mobile_app_{{ device_id }}
             data:
-              message: "Motion detected on {{ trigger.to_state.name }}"
+              message: "Motion detected on {{ states[input.camera].name }}"
               data:
-                image: "/api/camera_proxy/{{ trigger.entity_id }}"
+                image: "/api/camera_proxy/{{ input.camera }}"
                 tag: "camera_notification"
                 color: "#ffa500"
                 sticky: false
