@@ -1,0 +1,127 @@
+blueprint:
+  name: Camera Security Notifications
+  description: Send notifications to devices when security cameras detect motion or other events
+  domain: automation
+  input:
+    camera:
+      name: Camera
+      description: Select the camera to monitor
+      selector:
+        entity:
+          domain: camera
+    notify_device:
+      name: Mobile Device
+      description: Device to receive notifications
+      selector:
+        device:
+          integration: mobile_app
+    motion_duration:
+      name: Minimum Motion Duration
+      description: Minimum time (in seconds) motion must be detected before sending alert
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 60
+          unit_of_measurement: seconds
+    cooldown_period:
+      name: Notification Cooldown
+      description: Minimum time between notifications (in minutes)
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 60
+          unit_of_measurement: minutes
+    notify_on_motion:
+      name: Notify on Motion
+      description: Send notification when motion is detected
+      default: true
+      selector:
+        boolean:
+    notify_on_person:
+      name: Notify on Person Detection
+      description: Send notification when a person is detected
+      default: true
+      selector:
+        boolean:
+    quiet_hours_start:
+      name: Quiet Hours Start
+      description: Start time for quiet hours (no notifications)
+      default: "22:00:00"
+      selector:
+        time:
+    quiet_hours_end:
+      name: Quiet Hours End
+      description: End time for quiet hours
+      default: "07:00:00"
+      selector:
+        time:
+
+trigger:
+  - platform: state
+    entity_id: !input camera
+    to: "on"
+    for:
+      seconds: !input motion_duration
+
+condition:
+  - condition: template
+    value_template: >
+      {% set now = now() %}
+      {% set start = strptime(input.quiet_hours_start, '%H:%M:%S').time() %}
+      {% set end = strptime(input.quiet_hours_end, '%H:%M:%S').time() %}
+      {% if start <= end %}
+        {{ not (now.time() >= start and now.time() <= end) }}
+      {% else %}
+        {{ not (now.time() >= start or now.time() <= end) }}
+      {% endif %}
+  - condition: or
+    conditions:
+      - condition: and
+        conditions:
+          - condition: template
+            value_template: "{{ trigger.to_state.attributes.motion }}"
+          - condition: input_boolean
+            input_id: notify_on_motion
+      - condition: and
+        conditions:
+          - condition: template
+            value_template: "{{ trigger.to_state.attributes.person }}"
+          - condition: input_boolean
+            input_id: notify_on_person
+
+action:
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.to_state.attributes.person }}"
+        sequence:
+          - service: notify.mobile_app_{{ device_id }}
+            data:
+              message: "Person detected on {{ trigger.to_state.name }}"
+              data:
+                image: "/api/camera_proxy/{{ trigger.entity_id }}"
+                tag: "camera_notification"
+                color: "#ff0000"
+                sticky: true
+                importance: high
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.to_state.attributes.motion }}"
+        sequence:
+          - service: notify.mobile_app_{{ device_id }}
+            data:
+              message: "Motion detected on {{ trigger.to_state.name }}"
+              data:
+                image: "/api/camera_proxy/{{ trigger.entity_id }}"
+                tag: "camera_notification"
+                color: "#ffa500"
+                sticky: false
+                importance: normal
+
+  - delay:
+      minutes: !input cooldown_period
+
+mode: single
+max_exceeded: silent
